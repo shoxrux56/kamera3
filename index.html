@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14181d">
+<title>Hujjat skaneri</title>
+<style>
+:root {
+  --bg: #14181d;
+  --panel: #1d232a;
+  --line: #2f3841;
+  --text: #f4f1ea;
+  --muted: #9aa4af;
+  --lamp: #ffb020;
+  --lamp-ink: #2a1a00;
+  --danger: #ff7b72;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text);
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+#app { position: relative; height: 100%; height: 100dvh; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+button:disabled { opacity: .4; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+.view { position: absolute; inset: 0; display: none; flex-direction: column; }
+.view.active { display: flex; }
+
+.chip { padding: 8px 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; }
+.chip[aria-pressed="true"], .chip.on { border-color: var(--lamp); color: var(--lamp); }
+.primary { background: var(--lamp); color: var(--lamp-ink); font-weight: 650; padding: 12px 20px; border-radius: 12px; }
+.ghost { border: 1px solid var(--line); padding: 12px 18px; border-radius: 12px; background: var(--panel); }
+
+/* --- kamera --- */
+.top { display: flex; justify-content: space-between; gap: 8px; padding: calc(var(--safe-t) + 10px) 12px 8px; }
+#viewport { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 8px; }
+#stage { position: relative; background: #000; border-radius: 10px; overflow: hidden; width: 100%; height: 100%; }
+#video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+#flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+#flash.go { animation: flash .22s ease-out; }
+@keyframes flash { from { opacity: .85; } to { opacity: 0; } }
+#hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: calc(100% - 32px);
+  padding: 7px 14px; border-radius: 999px; background: rgba(20,24,29,.82); font-size: 14px; text-align: center; pointer-events: none; }
+#camError { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center;
+  padding: 28px; text-align: center; background: var(--bg); color: var(--muted); }
+.bar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 12px 18px calc(var(--safe-b) + 16px); }
+#btnDone { justify-self: end; }
+#btnShutter { width: 74px; height: 74px; border-radius: 50%; background: var(--text); border: 4px solid var(--bg); box-shadow: 0 0 0 3px var(--text); }
+#btnShutter:active:not(:disabled) { transform: scale(.94); }
+#btnPages { position: relative; width: 56px; height: 56px; border-radius: 10px; border: 1.5px dashed var(--line); overflow: hidden; background: var(--panel); }
+#btnPages.has { border: 1.5px solid var(--text); }
+#lastThumb { width: 100%; height: 100%; object-fit: cover; display: none; }
+#btnPages.has #lastThumb { display: block; }
+#count { position: absolute; right: 3px; bottom: 3px; min-width: 22px; padding: 1px 6px; border-radius: 999px; background: var(--lamp); color: var(--lamp-ink); font-size: 13px; font-weight: 700; display: none; }
+#btnPages.has #count { display: block; }
+
+/* --- ko'rib chiqish --- */
+.rtop { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: calc(var(--safe-t) + 10px) 12px 6px; }
+#rcount { color: var(--muted); font-size: 14px; }
+.filters { display: flex; gap: 8px; padding: 6px 12px 10px; overflow-x: auto; }
+#grid { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 12px 16px; display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); align-content: start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.card .pic { background: #fff; display: flex; align-items: center; justify-content: center; aspect-ratio: 3 / 4; }
+.card img { max-width: 100%; max-height: 100%; display: block; }
+.card .meta { padding: 8px 10px 4px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; }
+.card .acts { display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 2px 6px 8px; }
+.card .acts button { font-size: 13px; padding: 6px 8px; border-radius: 8px; color: var(--text); }
+.card .acts button:hover { background: var(--line); }
+.card .acts .del { color: var(--danger); margin-left: auto; }
+.empty { grid-column: 1 / -1; padding: 48px 16px; text-align: center; color: var(--muted); }
+.rbar { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 12px calc(var(--safe-b) + 12px); border-top: 1px solid var(--line); }
+.rbar .primary { flex: 1 1 100%; order: -1; }
+.rbar .ghost { flex: 1; }
+
+/* --- burchak muharriri --- */
+.overlay { position: absolute; inset: 0; z-index: 20; background: var(--bg); display: flex; flex-direction: column; }
+.edhead { padding: calc(var(--safe-t) + 14px) 16px 8px; color: var(--muted); font-size: 14px; }
+.edbody { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 8px; }
+#edCanvas { touch-action: none; max-width: 100%; max-height: 100%; border-radius: 6px; }
+.edbar { display: flex; gap: 8px; padding: 10px 12px calc(var(--safe-b) + 12px); border-top: 1px solid var(--line); }
+.edbar .primary { margin-left: auto; }
+
+/* --- band / progress --- */
+#busy { z-index: 30; background: rgba(10,12,15,.78); align-items: center; justify-content: center; }
+#busy .box { width: min(86vw, 360px); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.progress { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--lamp); transition: width .15s; }
+.progress.indet i { width: 40%; animation: slide 1.1s infinite ease-in-out; }
+@keyframes slide { from { margin-left: -40%; } to { margin-left: 100%; } }
+#busyActions { display: flex; gap: 8px; }
+#busyActions button { flex: 1; }
+#toast { position: absolute; left: 50%; bottom: calc(var(--safe-b) + 110px); transform: translateX(-50%); z-index: 40; max-width: min(92vw, 420px);
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; text-align: center; }
+#toast.show { opacity: 1; }
+/* --- Telegram sozlamalari --- */
+#settings .body { flex: 1; overflow-y: auto; width: 100%; max-width: 520px; margin: 0 auto; padding: calc(var(--safe-t) + 16px) 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+#settings h1 { font-size: 18px; font-weight: 650; }
+#settings label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+#settings input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
+.note { font-size: 13px; color: var(--muted); }
+#setStatus { min-height: 20px; font-size: 14px; color: var(--muted); }
+#setStatus.err { color: var(--danger); }
+@media (prefers-reduced-motion: reduce) { #flash.go { animation: none; } .progress.indet i { animation: none; width: 100%; } }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <section id="cam" class="view active">
+    <header class="top">
+      <button id="btnAuto" class="chip" aria-pressed="true">Avto olish: yoqilgan</button>
+      <button id="btnGallery" class="chip">Galereyadan</button>
+    </header>
+    <div id="viewport">
+      <div id="stage">
+        <video id="video" playsinline muted autoplay></video>
+        <canvas id="overlay"></canvas>
+        <div id="flash"></div>
+      </div>
+      <div id="hint" role="status">Kamera ochilmoqda…</div>
+      <div id="camError" hidden>
+        <p id="camErrorText"></p>
+        <button id="btnRetryCam" class="primary">Kamerani yoqish</button>
+      </div>
+    </div>
+    <footer class="bar">
+      <button id="btnPages" aria-label="Olingan sahifalarni ko‘rish"><img id="lastThumb" alt=""><span id="count">0</span></button>
+      <button id="btnShutter" aria-label="Rasmga olish" disabled></button>
+      <button id="btnDone" class="primary" disabled>Tayyor</button>
+    </footer>
+  </section>
+
+  <section id="review" class="view">
+    <header class="rtop">
+      <button id="btnBack" class="chip">Kameraga qaytish</button>
+      <span id="rcount"></span>
+      <button id="btnSettings" class="chip">Telegram sozlamalari</button>
+    </header>
+    <div class="filters" role="group" aria-label="Skan uslubi">
+      <button class="chip on" data-mode="color">Rangli</button>
+      <button class="chip" data-mode="gray">Kulrang</button>
+      <button class="chip" data-mode="bw">Oq-qora</button>
+    </div>
+    <div id="grid"></div>
+    <footer class="rbar">
+      <button id="btnSend" class="primary">Telegramga yuborish</button>
+      <button id="btnShare" class="ghost" hidden>Ulashish</button>
+      <button id="btnPdf" class="ghost">PDF yuklab olish</button>
+    </footer>
+  </section>
+
+  <div id="editor" class="overlay" hidden>
+    <div class="edhead">Burchaklarni hujjat chetiga suring</div>
+    <div class="edbody"><canvas id="edCanvas"></canvas></div>
+    <div class="edbar">
+      <button id="edCancel" class="ghost">Bekor qilish</button>
+      <button id="edReset" class="ghost">Butun rasm</button>
+      <button id="edSave" class="primary">Saqlash</button>
+    </div>
+  </div>
+
+  <div id="settings" class="overlay" hidden>
+    <div class="body">
+      <h1>Telegram sozlamalari</h1>
+      <p class="note">Token va chat ID faqat shu qurilmaning brauzerida saqlanadi. Ularni saytning kodiga yozib qo‘ymang: sayt ochiq bo‘lsa, hamma o‘qiy oladi.</p>
+      <div><label for="setToken">Bot tokeni (BotFather beradi)</label><input id="setToken" type="password" autocomplete="off" spellcheck="false"></div>
+      <div><label for="setChat">Qabul qiluvchining chat ID si</label><input id="setChat" type="text" inputmode="numeric" autocomplete="off"></div>
+      <button id="btnFindChat" class="ghost">Chat ID ni avtomatik topish</button>
+      <p class="note">Avval qabul qiluvchi botga /start yozsin, keyin shu tugmani bosing.</p>
+      <div id="setStatus" role="status"></div>
+    </div>
+    <div class="edbar">
+      <button id="setClose" class="ghost">Yopish</button>
+      <button id="setSave" class="primary">Tekshirish va saqlash</button>
+    </div>
+  </div>
+
+  <div id="busy" class="overlay" hidden>
+    <div class="box">
+      <div id="busyText"></div>
+      <div class="progress" id="busyProg"><i id="busyBar"></i></div>
+      <div id="busyActions"></div>
+    </div>
+  </div>
+
+  <div id="toast" role="status"></div>
+</div>
+<input type="file" id="fileInput" accept="image/*" multiple hidden>
+
+<script src="scanner.js"></script>
+<script>
+"use strict";
+
+/* ---------- sozlamalar ---------- */
+var CV_URLS = [
+  "opencv.js", // ixtiyoriy: fayl yoniga qo'ysangiz, CDN kerak bo'lmaydi
+  "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js",
+  "https://unpkg.com/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js",
+  "https://docs.opencv.org/5.0.0/opencv.js"
+];
+var PDF_URLS = [
+  "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+  "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"
+];
+var STABLE_FRAMES = 6;      // ~0.8 s qimirlamay tursa, avto olinadi
+var MAX_SIDE = 2000;        // sahifaning uzun tomoni (px)
+var DETECT_WIDTH = 480;     // jonli aniqlash uchun kichraytirilgan kenglik
+var MAX_PDF_BYTES = 48 * 1024 * 1024;
+
+var $ = function (id) { return document.getElementById(id); };
+var video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
+var detCanvas = document.createElement("canvas");
+var dctx = detCanvas.getContext("2d", { willReadFrequently: true });
+
+var st = {
+  cvReady: false, pages: [], filter: "color", auto: true,
+  target: null, shown: null, stable: 0, misses: 0, armed: true, captured: null,
+  lastCapture: 0, pdfBlob: null, busy: false, stream: null, camOn: false, raf: 0, uid: 0, wake: null
+};
+
+/* ---------- yordamchilar ---------- */
+function toBlob(c, type, q) { return new Promise(function (r) { c.toBlob(r, type, q); }); }
+function makeCanvas(w, h) { var c = document.createElement("canvas"); c.width = w; c.height = h; return c; }
+function loadScript(src) {
+  return new Promise(function (res, rej) {
+    var s = document.createElement("script");
+    s.src = src; s.async = true;
+    s.onload = res; s.onerror = function () { rej(new Error("yuklanmadi: " + src)); };
+    document.head.appendChild(s);
+  });
+}
+async function loadFirst(urls) {
+  var last;
+  for (var i = 0; i < urls.length; i++) {
+    try { await loadScript(urls[i]); return urls[i]; } catch (e) { last = e; }
+  }
+  throw last;
+}
+var toastTimer = 0;
+function toast(msg) {
+  var t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove("show"); }, 3200);
+}
+function busy(text, progress, actions) {
+  $("busy").hidden = false;
+  $("busyText").textContent = text;
+  var prog = $("busyProg");
+  if (progress === undefined) { prog.style.display = "none"; }
+  else {
+    prog.style.display = "";
+    prog.classList.toggle("indet", progress === null);
+    $("busyBar").style.width = progress === null ? "" : Math.round(progress * 100) + "%";
+  }
+  var a = $("busyActions"); a.replaceChildren();
+  (actions || []).forEach(function (x) {
+    var b = document.createElement("button");
+    b.className = x.primary ? "primary" : "ghost"; b.textContent = x.label; b.onclick = x.onClick; a.appendChild(b);
+  });
+}
+function unbusy() { $("busy").hidden = true; }
+
+/* ---------- OpenCV yuklash ---------- */
+async function loadCV() {
+  await loadFirst(CV_URLS);
+  var c = window.cv;
+  if (c && typeof c.then === "function") c = await c;               // yangi buildlar Promise qaytaradi
+  else if (c && !c.Mat) await new Promise(function (r) { c.onRuntimeInitialized = r; });
+  window.cv = c;
+  st.cvReady = true;
+  $("btnShutter").disabled = false;
+  updateHint();
+}
+
+/* ---------- kamera ---------- */
+async function startCamera() {
+  $("camError").hidden = true;
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("insecure");
+    st.stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+  } catch (e) {
+    var msg = "Kameraga ruxsat berilmadi. Brauzer sozlamalaridan kameraga ruxsat bering va qayta urinib ko‘ring.";
+    if (e && e.message === "insecure") msg = "Kamera faqat HTTPS orqali ishlaydi. Saytni https:// manzil bilan oching.";
+    else if (e && e.name === "NotFoundError") msg = "Kamera topilmadi. Galereyadan rasm tanlashingiz mumkin.";
+    $("camErrorText").textContent = msg; $("camError").hidden = false; $("hint").hidden = true;
+    return;
+  }
+  $("hint").hidden = false;
+  video.srcObject = st.stream;
+  try { await video.play(); } catch (_) {}
+  try { if (navigator.wakeLock) st.wake = await navigator.wakeLock.request("screen"); } catch (_) {}
+  st.camOn = true; st.target = null; st.shown = null; st.stable = 0; st.misses = 0; st.armed = true;
+  if (video.videoWidth) layout();
+  cancelAnimationFrame(st.raf); st.raf = requestAnimationFrame(loop);
+}
+function stopCamera() {
+  st.camOn = false; cancelAnimationFrame(st.raf);
+  if (st.stream) st.stream.getTracks().forEach(function (t) { t.stop(); });
+  st.stream = null; video.srcObject = null;
+  try { if (st.wake) st.wake.release(); } catch (_) {} st.wake = null;
+}
+function layout() {
+  var vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  var box = $("viewport").getBoundingClientRect();
+  var k = Math.min((box.width - 16) / vw, box.height / vh);
+  var w = Math.floor(vw * k), h = Math.floor(vh * k), dpr = window.devicePixelRatio || 1;
+  var stage = $("stage");
+  stage.style.width = w + "px"; stage.style.height = h + "px";
+  overlay.width = Math.floor(w * dpr); overlay.height = Math.floor(h * dpr);
+}
+video.addEventListener("loadedmetadata", layout);
+video.addEventListener("resize", layout);
+window.addEventListener("resize", layout);
+window.addEventListener("orientationchange", function () { setTimeout(layout, 250); });
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden && $("cam").classList.contains("active") && (!st.stream || !st.stream.active)) startCamera();
+});
+
+/* ---------- aniqlash ---------- */
+function detectFrom(source, sw, sh, work) {
+  var dw = Math.min(work || DETECT_WIDTH, sw), dh = Math.round(sh * dw / sw);
+  detCanvas.width = dw; detCanvas.height = dh;
+  dctx.drawImage(source, 0, 0, dw, dh);
+  var src = cv.matFromImageData(dctx.getImageData(0, 0, dw, dh));
+  var c = null;
+  try { c = DocScanner.detect(cv, src); } finally { src.delete(); }
+  if (!c) return null;
+  var r = sw / dw;
+  return c.map(function (p) { return { x: p.x * r, y: p.y * r }; });
+}
+
+var lastDet = 0;
+function loop(t) {
+  if (!st.camOn) return;
+  if (st.cvReady && video.readyState >= 2 && t - lastDet > 130) { lastDet = t; try { step(); } catch (e) { console.error(e); } }
+  draw();
+  st.raf = requestAnimationFrame(loop);
+}
+function step() {
+  var vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return;
+  var diag = Math.hypot(vw, vh);
+  var cur = detectFrom(video, vw, vh);
+  if (cur) {
+    if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.02) st.stable++; else st.stable = 0;
+    st.target = cur; st.misses = 0;
+    if (!st.armed && st.captured && DocScanner.cornerShift(st.captured, cur) > diag * 0.08) st.armed = true;
+  } else {
+    st.misses++;
+    if (st.misses >= 3) { st.target = null; st.stable = 0; st.armed = true; }
+  }
+  updateHint();
+  if (st.auto && st.armed && st.target && st.stable >= STABLE_FRAMES && performance.now() - st.lastCapture > 1200) capture();
+}
+function updateHint() {
+  var t;
+  if (!st.cvReady) t = "Skaner tayyorlanmoqda… (birinchi safar biroz vaqt oladi)";
+  else if (!st.target) t = "Hujjatni kadr ichiga qo‘ying";
+  else if (st.auto) t = st.armed ? (st.stable >= STABLE_FRAMES ? "Olinmoqda…" : "Qimirlatmang…") : "Keyingi sahifani qo‘ying";
+  else t = "Hujjat topildi — tugmani bosing";
+  var h = $("hint"); if (h.textContent !== t) h.textContent = t;
+}
+function draw() {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  var t = st.target;
+  if (!t || !video.videoWidth) { st.shown = null; return; }
+  if (!st.shown) st.shown = t.map(function (p) { return { x: p.x, y: p.y }; });
+  else for (var i = 0; i < 4; i++) { st.shown[i].x += (t[i].x - st.shown[i].x) * 0.45; st.shown[i].y += (t[i].y - st.shown[i].y) * 0.45; }
+  var f = overlay.width / video.videoWidth, s = st.shown, fill = 0.1 + 0.22 * Math.min(1, st.stable / STABLE_FRAMES);
+  octx.beginPath(); octx.moveTo(s[0].x * f, s[0].y * f);
+  for (var j = 1; j < 4; j++) octx.lineTo(s[j].x * f, s[j].y * f);
+  octx.closePath();
+  octx.fillStyle = "rgba(255,176,32," + fill.toFixed(3) + ")"; octx.fill();
+  octx.lineWidth = 3 * (window.devicePixelRatio || 1); octx.lineJoin = "round"; octx.strokeStyle = "#ffb020"; octx.stroke();
+  for (var k = 0; k < 4; k++) { octx.beginPath(); octx.arc(s[k].x * f, s[k].y * f, 5 * (window.devicePixelRatio || 1), 0, 6.283); octx.fillStyle = "#ffb020"; octx.fill(); }
+}
+
+/* ---------- sahifa olish va ishlov berish ---------- */
+async function capture() {
+  if (st.busy || !st.cvReady) return;
+  st.busy = true; st.lastCapture = performance.now(); st.armed = false;
+  try {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    var c = makeCanvas(vw, vh); c.getContext("2d").drawImage(video, 0, 0);
+    var corners = detectFrom(c, vw, vh) || (st.target ? st.target.map(function (p) { return { x: p.x, y: p.y }; }) : null);
+    st.captured = corners;
+    $("flash").classList.remove("go"); void $("flash").offsetWidth; $("flash").classList.add("go");
+    if (navigator.vibrate) navigator.vibrate(30);
+    await addPage(c, corners);
+  } catch (e) { console.error(e); toast("Rasmni qayta ishlashda xato: " + (e && e.message ? e.message : e)); }
+  finally { st.busy = false; }
+}
+async function addPage(canvas, corners) {
+  var found = !!corners;
+  if (!corners) {
+    var m = Math.round(Math.min(canvas.width, canvas.height) * 0.03);
+    corners = [{ x: m, y: m }, { x: canvas.width - m, y: m }, { x: canvas.width - m, y: canvas.height - m }, { x: m, y: canvas.height - m }];
+  }
+  var page = { id: ++st.uid, orig: await toBlob(canvas, "image/jpeg", 0.92), corners: corners, rot: 0, rendered: null, url: null, rw: 0, rh: 0, found: found };
+  await renderPage(page);
+  st.pages.push(page);
+  refreshCounter();
+  if (!found) toast("Hujjat chegarasi topilmadi — butun kadr olindi. Ko‘rib chiqishda “Burchaklar” bilan to‘g‘rilang.");
+}
+async function renderPage(page) {
+  var bmp = await createImageBitmap(page.orig);
+  var c = makeCanvas(bmp.width, bmp.height), ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0); if (bmp.close) bmp.close();
+  var src = cv.matFromImageData(ctx.getImageData(0, 0, c.width, c.height));
+  var warped = null, filt = null, rot = null;
+  try {
+    warped = DocScanner.warp(cv, src, page.corners, MAX_SIDE);
+    filt = DocScanner.applyFilter(cv, warped, st.filter);
+    var fin = filt;
+    if (page.rot) {
+      rot = new cv.Mat();
+      cv.rotate(filt, rot, page.rot === 90 ? cv.ROTATE_90_CLOCKWISE : page.rot === 180 ? cv.ROTATE_180 : cv.ROTATE_90_COUNTERCLOCKWISE);
+      fin = rot;
+    }
+    var out = makeCanvas(fin.cols, fin.rows);
+    cv.imshow(out, fin);
+    page.rendered = await toBlob(out, "image/jpeg", st.filter === "color" ? 0.85 : 0.8);
+    page.rw = out.width; page.rh = out.height;
+  } finally {
+    src.delete(); if (warped) warped.delete(); if (filt) filt.delete(); if (rot) rot.delete();
+  }
+  if (page.url) URL.revokeObjectURL(page.url);
+  page.url = URL.createObjectURL(page.rendered);
+  st.pdfBlob = null;
+}
+function refreshCounter() {
+  var n = st.pages.length, last = st.pages[n - 1];
+  $("count").textContent = n;
+  $("btnPages").classList.toggle("has", n > 0);
+  $("btnDone").disabled = n === 0;
+  if (last) $("lastThumb").src = last.url;
+}
+
+/* ---------- galereyadan import ---------- */
+async function importFiles(files) {
+  if (!st.cvReady) { toast("Skaner hali tayyor emas, biroz kuting."); return; }
+  var list = Array.prototype.slice.call(files), i = 0;
+  busy("Rasmlar qayta ishlanmoqda…", 0);
+  for (var f of list) {
+    try {
+      var bmp = await createImageBitmap(f);
+      var k = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+      var c = makeCanvas(Math.round(bmp.width * k), Math.round(bmp.height * k));
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height); if (bmp.close) bmp.close();
+      await addPage(c, detectFrom(c, c.width, c.height, 640));
+    } catch (e) { console.error(e); toast("Rasmni o‘qib bo‘lmadi: " + f.name); }
+    busy("Rasmlar qayta ishlanmoqda… " + (++i) + "/" + list.length, i / list.length);
+  }
+  unbusy();
+  if (st.pages.length) showView("review");
+}
+
+/* ---------- ko'rinishlar ---------- */
+function showView(name) {
+  $("cam").classList.toggle("active", name === "cam");
+  $("review").classList.toggle("active", name === "review");
+  if (name === "cam") startCamera();
+  else { stopCamera(); renderGrid(); }
+}
+function renderGrid() {
+  var g = $("grid"); g.replaceChildren();
+  $("rcount").textContent = st.pages.length + " sahifa";
+  $("btnPdf").disabled = $("btnSend").disabled = st.pages.length === 0;
+  if (!st.pages.length) {
+    var e = document.createElement("div"); e.className = "empty";
+    e.textContent = "Hali sahifa yo‘q. Kameraga qayting va hujjatni kadrga oling."; g.appendChild(e); return;
+  }
+  st.pages.forEach(function (p, idx) {
+    var card = document.createElement("div"); card.className = "card";
+    var pic = document.createElement("div"); pic.className = "pic";
+    var img = document.createElement("img"); img.src = p.url; img.alt = (idx + 1) + "-sahifa"; pic.appendChild(img);
+    var meta = document.createElement("div"); meta.className = "meta";
+    var n = document.createElement("span"); n.textContent = (idx + 1) + "-sahifa"; meta.appendChild(n);
+    var acts = document.createElement("div"); acts.className = "acts";
+    [["Burchaklar", function () { openEditor(p); }],
+     ["Aylantirish", function () { rotatePage(p); }],
+     ["O‘chirish", function () { removePage(p); }, "del"]].forEach(function (a) {
+      var b = document.createElement("button"); b.textContent = a[0]; if (a[2]) b.className = a[2]; b.onclick = a[1]; acts.appendChild(b);
+    });
+    card.appendChild(pic); card.appendChild(meta); card.appendChild(acts); g.appendChild(card);
+  });
+}
+async function rotatePage(p) {
+  p.rot = (p.rot + 90) % 360;
+  busy("Aylantirilmoqda…"); try { await renderPage(p); } finally { unbusy(); }
+  renderGrid(); refreshCounter();
+}
+function removePage(p) {
+  if (!confirm("Bu sahifani o‘chirasizmi?")) return;
+  st.pages = st.pages.filter(function (x) { return x !== p; });
+  st.pdfBlob = null;
+  if (p.url) URL.revokeObjectURL(p.url);
+  renderGrid(); refreshCounter();
+}
+async function setFilter(mode) {
+  if (mode === st.filter) return;
+  st.filter = mode;
+  document.querySelectorAll(".filters .chip").forEach(function (b) { b.classList.toggle("on", b.dataset.mode === mode); });
+  for (var i = 0; i < st.pages.length; i++) {
+    busy("Qayta ishlanmoqda… " + (i + 1) + "/" + st.pages.length, i / st.pages.length);
+    await renderPage(st.pages[i]);
+  }
+  unbusy(); renderGrid(); refreshCounter();
+}
+
+/* ---------- burchak muharriri ---------- */
+var ed = { page: null, bmp: null, scale: 1, pts: [], drag: -1 };
+async function openEditor(page) {
+  busy("Ochilmoqda…"); 
+  try { ed.bmp = await createImageBitmap(page.orig); } finally { unbusy(); }
+  ed.page = page;
+  $("editor").hidden = false;
+  var maxW = Math.min(window.innerWidth - 16, 1000), maxH = window.innerHeight - 170;
+  ed.scale = Math.min(maxW / ed.bmp.width, maxH / ed.bmp.height);
+  var cv2 = $("edCanvas");
+  cv2.width = Math.round(ed.bmp.width * ed.scale); cv2.height = Math.round(ed.bmp.height * ed.scale);
+  ed.pts = page.corners.map(function (p) { return { x: p.x * ed.scale, y: p.y * ed.scale }; });
+  drawEditor();
+}
+function drawEditor() {
+  var c = $("edCanvas"), ctx = c.getContext("2d");
+  ctx.drawImage(ed.bmp, 0, 0, c.width, c.height);
+  ctx.beginPath(); ctx.moveTo(ed.pts[0].x, ed.pts[0].y);
+  for (var i = 1; i < 4; i++) ctx.lineTo(ed.pts[i].x, ed.pts[i].y);
+  ctx.closePath(); ctx.fillStyle = "rgba(255,176,32,.14)"; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = "#ffb020"; ctx.stroke();
+  ed.pts.forEach(function (p) {
+    ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, 6.283); ctx.fillStyle = "rgba(20,24,29,.55)"; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = "#ffb020"; ctx.stroke();
+  });
+}
+function edPos(e) {
+  var c = $("edCanvas"), r = c.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * c.width / r.width, y: (e.clientY - r.top) * c.height / r.height };
+}
+$("edCanvas").addEventListener("pointerdown", function (e) {
+  var p = edPos(e), best = -1, bd = 44 * ($("edCanvas").width / $("edCanvas").getBoundingClientRect().width);
+  ed.pts.forEach(function (q, i) { var d = Math.hypot(q.x - p.x, q.y - p.y); if (d < bd) { bd = d; best = i; } });
+  ed.drag = best;
+  if (best >= 0) { e.target.setPointerCapture(e.pointerId); e.preventDefault(); }
+});
+$("edCanvas").addEventListener("pointermove", function (e) {
+  if (ed.drag < 0) return;
+  var p = edPos(e), c = $("edCanvas");
+  ed.pts[ed.drag] = { x: Math.max(0, Math.min(c.width, p.x)), y: Math.max(0, Math.min(c.height, p.y)) };
+  drawEditor();
+});
+["pointerup", "pointercancel"].forEach(function (n) { $("edCanvas").addEventListener(n, function () { ed.drag = -1; }); });
+$("edCancel").onclick = function () { $("editor").hidden = true; if (ed.bmp && ed.bmp.close) ed.bmp.close(); };
+$("edReset").onclick = function () {
+  var c = $("edCanvas"); ed.pts = [{ x: 0, y: 0 }, { x: c.width, y: 0 }, { x: c.width, y: c.height }, { x: 0, y: c.height }]; drawEditor();
+};
+$("edSave").onclick = async function () {
+  var page = ed.page;
+  page.corners = DocScanner.orderCorners(ed.pts.map(function (p) { return { x: p.x / ed.scale, y: p.y / ed.scale }; }));
+  $("editor").hidden = true; if (ed.bmp && ed.bmp.close) ed.bmp.close();
+  busy("Qayta ishlanmoqda…");
+  try { await renderPage(page); } catch (e) { toast("Xato: " + e.message); } finally { unbusy(); }
+  renderGrid(); refreshCounter();
+};
+
+/* ---------- PDF va Telegram ---------- */
+async function makePdf() {
+  if (st.pdfBlob) return st.pdfBlob;
+  if (!window.jspdf) await loadFirst(PDF_URLS);
+  var items = [];
+  for (var p of st.pages) items.push({ bytes: new Uint8Array(await p.rendered.arrayBuffer()), w: p.rw, h: p.rh });
+  var ab = DocScanner.buildPdf(window.jspdf.jsPDF, items);
+  st.pdfBlob = new Blob([ab], { type: "application/pdf" });
+  return st.pdfBlob;
+}
+function pdfName() {
+  var d = new Date(), z = function (n) { return String(n).padStart(2, "0"); };
+  return "Skan_" + d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + "_" + z(d.getHours()) + "-" + z(d.getMinutes()) + ".pdf";
+}
+async function downloadPdf() {
+  busy("PDF tayyorlanmoqda…", null);
+  try {
+    var blob = await makePdf(), a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = pdfName(); document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
+  } catch (e) { toast("PDF yaratib bo‘lmadi: " + e.message); } finally { unbusy(); }
+}
+/* ---------- Telegram (serversiz: brauzerdan to'g'ridan-to'g'ri Bot API) ---------- */
+var TG = "https://api.telegram.org/bot";
+function loadCfg() { try { return JSON.parse(localStorage.getItem("docscan_tg") || "{}") || {}; } catch (_) { return {}; } }
+function saveCfg(c) { try { localStorage.setItem("docscan_tg", JSON.stringify(c)); return true; } catch (_) { return false; } }
+function validToken(t) { return /^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(t); }
+function tgError(desc, status) {
+  desc = desc || ("HTTP " + status);
+  var d = desc.toLowerCase();
+  if (status === 401 || d.indexOf("unauthorized") >= 0) return "Bot tokeni noto‘g‘ri.";
+  if (d.indexOf("chat not found") >= 0 || d.indexOf("can't initiate") >= 0 || d.indexOf("forbidden") >= 0)
+    return "Qabul qiluvchi botga hali /start yozmagan yoki chat ID noto‘g‘ri. (" + desc + ")";
+  return "Telegram: " + desc;
+}
+async function tgJson(token, method, params) {
+  var r;
+  try { r = await fetch(TG + token + "/" + method + (params ? "?" + new URLSearchParams(params) : "")); }
+  catch (_) { throw new Error("Telegramga ulanib bo‘lmadi. Internetni tekshiring."); }
+  var j = null; try { j = await r.json(); } catch (_) {}
+  if (!j || !j.ok) throw new Error(tgError(j && j.description, r.status));
+  return j.result;
+}
+function tgSend(cfg, blob, name, caption, onProgress) {
+  return new Promise(function (resolve, reject) {
+    var x = new XMLHttpRequest();
+    x.open("POST", TG + cfg.token + "/sendDocument"); x.timeout = 180000;
+    x.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    var fail = function () { reject(new Error("Telegramga ulanib bo‘lmadi. Internetni tekshirib, qayta urinib ko‘ring.")); };
+    x.onerror = fail; x.ontimeout = fail;
+    x.onload = function () {
+      var j = null; try { j = JSON.parse(x.responseText); } catch (_) {}
+      if (j && j.ok) resolve(j); else reject(new Error(tgError(j && j.description, x.status)));
+    };
+    var fd = new FormData();
+    fd.append("chat_id", cfg.chat); fd.append("caption", caption); fd.append("document", blob, name);
+    x.send(fd);
+  });
+}
+function setStatus(t, err) { var el = $("setStatus"); el.textContent = t; el.classList.toggle("err", !!err); }
+function openSettings(msg) {
+  var c = loadCfg();
+  $("setToken").value = c.token || ""; $("setChat").value = c.chat || "";
+  setStatus(msg || "", false); $("settings").hidden = false;
+}
+async function findChat() {
+  var token = $("setToken").value.trim();
+  if (!validToken(token)) { setStatus("Avval bot tokenini kiriting.", true); return; }
+  setStatus("Qidirilmoqda…");
+  try {
+    var ups = await tgJson(token, "getUpdates", { limit: "50" }), chats = [];
+    ups.forEach(function (u) { var m = u.message || u.edited_message; if (m && m.chat && m.chat.type === "private") chats.push(m.chat); });
+    if (!chats.length) { setStatus("Xabar topilmadi. Qabul qiluvchi botga /start yozsin va qayta bosing.", true); return; }
+    var c = chats[chats.length - 1];
+    $("setChat").value = String(c.id);
+    setStatus("Topildi: " + [c.first_name, c.last_name].filter(Boolean).join(" ") + (c.username ? " (@" + c.username + ")" : "") + ". Tekshirib, saqlang.");
+  } catch (e) { setStatus(e.message, true); }
+}
+async function saveSettings() {
+  var token = $("setToken").value.trim(), chat = $("setChat").value.trim();
+  if (!validToken(token)) { setStatus("Bot tokeni formati noto‘g‘ri (masalan 123456789:AAH...).", true); return; }
+  if (!/^-?\d+$/.test(chat)) { setStatus("Chat ID faqat raqamlardan iborat bo‘lishi kerak.", true); return; }
+  setStatus("Tekshirilmoqda…");
+  try {
+    var me = await tgJson(token, "getMe");
+    if (!saveCfg({ token: token, chat: chat })) throw new Error("Brauzer ma’lumotni saqlashga ruxsat bermadi.");
+    setStatus("Saqlandi: @" + me.username);
+    setTimeout(function () { $("settings").hidden = true; }, 700);
+  } catch (e) { setStatus(e.message, true); }
+}
+async function sendPdf() {
+  var cfg = loadCfg();
+  if (!cfg.token || !cfg.chat) { openSettings("Telegramga yuborish uchun bot tokeni va chat ID kerak."); return; }
+  busy("PDF tayyorlanmoqda…", null);
+  var blob;
+  try { blob = await makePdf(); } catch (e) { unbusy(); toast("PDF yaratib bo‘lmadi: " + e.message); return; }
+  if (blob.size > MAX_PDF_BYTES) {
+    busy("PDF juda katta (" + (blob.size / 1048576).toFixed(1) + " MB). Telegram 50 MB gacha ruxsat beradi. Sahifalarni kamaytiring yoki Kulrang / Oq-qora uslubni tanlang.", undefined,
+      [{ label: "Yopish", onClick: unbusy }]);
+    return;
+  }
+  var n = st.pages.length, mb = (blob.size / 1048576).toFixed(1);
+  busy("Telegramga yuborilmoqda… (" + mb + " MB)", 0);
+  try {
+    await tgSend(cfg, blob, pdfName(), "Hujjat — " + n + " sahifa", function (f) { busy("Telegramga yuborilmoqda… " + Math.round(f * 100) + "%", f); });
+    busy("Yuborildi. " + n + " sahifali PDF Telegramga tushdi.", undefined, [
+      { label: "Yopish", onClick: unbusy },
+      { label: "Yangi hujjat", primary: true, onClick: function () { newDocument(); } }
+    ]);
+  } catch (e) {
+    busy(e.message, undefined, [
+      { label: "Yopish", onClick: unbusy },
+      { label: "Sozlamalar", onClick: function () { unbusy(); openSettings(); } },
+      { label: "Qayta urinish", primary: true, onClick: sendPdf }
+    ]);
+  }
+}
+
+/* ---------- Ulashish (Web Share): token kerak emas, odamni Telegramning o'zida tanlaysiz ---------- */
+var canShareFiles = (function () {
+  try { return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], "a.pdf", { type: "application/pdf" })] })); }
+  catch (_) { return false; }
+})();
+async function sharePdf() {
+  var blob = st.pdfBlob;
+  if (!blob) {
+    busy("PDF tayyorlanmoqda…", null);
+    try { blob = await makePdf(); } catch (e) { unbusy(); toast("PDF yaratib bo‘lmadi: " + e.message); return; }
+    unbusy();
+  }
+  try { await navigator.share({ files: [new File([blob], pdfName(), { type: "application/pdf" })], title: "Hujjat" }); }
+  catch (e) {
+    if (e && e.name === "AbortError") return;
+    if (e && e.name === "NotAllowedError") {
+      busy("PDF tayyor. Ulashish oynasini ochish uchun tugmani bosing.", undefined, [
+        { label: "Yopish", onClick: unbusy },
+        { label: "Ulashish", primary: true, onClick: function () { unbusy(); sharePdf(); } }
+      ]);
+      return;
+    }
+    toast("Ulashib bo‘lmadi: " + (e && e.message ? e.message : e));
+  }
+}
+function newDocument() {
+  st.pages.forEach(function (p) { if (p.url) URL.revokeObjectURL(p.url); });
+  st.pages = []; st.pdfBlob = null; st.captured = null; refreshCounter(); unbusy(); showView("cam");
+}
+
+/* ---------- hodisalar ---------- */
+$("btnShutter").onclick = capture;
+$("btnAuto").onclick = function () {
+  st.auto = !st.auto; this.setAttribute("aria-pressed", String(st.auto));
+  this.textContent = "Avto olish: " + (st.auto ? "yoqilgan" : "o‘chiq"); updateHint();
+};
+$("btnGallery").onclick = function () { $("fileInput").click(); };
+$("fileInput").onchange = function () { if (this.files.length) importFiles(this.files); this.value = ""; };
+$("btnDone").onclick = $("btnPages").onclick = function () { if (st.pages.length) showView("review"); };
+$("btnBack").onclick = function () { showView("cam"); };
+$("btnRetryCam").onclick = startCamera;
+$("btnPdf").onclick = downloadPdf;
+$("btnSend").onclick = sendPdf;
+$("btnShare").onclick = sharePdf;
+if (canShareFiles) $("btnShare").hidden = false;
+$("btnSettings").onclick = function () { openSettings(); };
+$("setClose").onclick = function () { $("settings").hidden = true; };
+$("setSave").onclick = saveSettings;
+$("btnFindChat").onclick = findChat;
+document.querySelectorAll(".filters .chip").forEach(function (b) { b.onclick = function () { setFilter(b.dataset.mode); }; });
+window.addEventListener("beforeunload", function (e) { if (st.pages.length) { e.preventDefault(); e.returnValue = ""; } });
+
+/* ---------- ishga tushirish ---------- */
+startCamera();
+loadCV().catch(function (e) {
+  console.error(e);
+  $("hint").textContent = "Skaner kutubxonasi yuklanmadi. Internetni tekshirib, sahifani yangilang.";
+});
+</script>
+</body>
+</html>
