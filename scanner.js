@@ -9,6 +9,10 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
+  // Nomzodni qabul qilish chegaralari (tomonlarning eng zaifi va o'rtachasi)
+  const MIN_WEAKEST = 0.4;
+  const MIN_MEAN = 0.7;
+
   function dist(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
@@ -79,7 +83,9 @@
       for (let i = 0; i < contours.size(); i++) {
         const cnt = contours.get(i);
         try {
-          if (cv.contourArea(cnt) < minArea * 0.6) continue;
+          // Qirra chizig'i uzilgan bo'lsa, kontur yuzi kichik chiqadi — shuning uchun o'rab turuvchi to'rtburchakka qaraymiz
+          const br = cv.boundingRect(cnt);
+          if (br.width * br.height < minArea) continue;
           const hull = new cv.Mat();
           try {
             cv.convexHull(cnt, hull, false, true);
@@ -119,14 +125,15 @@
   /**
    * Nomzod to'rtburchakning har bir tomoni haqiqiy chegara (qirra) ustida yotishini o'lchaydi.
    * `edgeMap` — qalinlashtirilgan Canny xaritasi. Tasvir chetiga yopishgan tomonlar "qo'llab-quvvatlangan" hisoblanadi.
-   * Qaytaradi: {weakest: eng zaif tomonning ulushi (0..1), border: chetga yopishgan nuqtalar ulushi}.
+   * Qaytaradi: {sides: [4 ta ulush 0..1], border: chetga yopishgan nuqtalar ulushi}.
    */
   function edgeSupport(q, edgeMap) {
     const W = edgeMap.cols;
     const H = edgeMap.rows;
     const data = edgeMap.data;
     const margin = Math.max(3, Math.round(Math.min(W, H) * 0.02));
-    let weakest = 1;
+    const sides = [];
+    const sideBorder = [];
     let onBorderCount = 0;
     let total = 0;
     for (let i = 0; i < 4; i++) {
@@ -135,18 +142,88 @@
       const len = dist(a, b);
       const n = Math.max(8, Math.round(len / 3));
       let hit = 0;
+      let onSide = 0;
       for (let k = 0; k < n; k++) {
         const t = (k + 0.5) / n;
         const x = Math.round(a.x + (b.x - a.x) * t);
         const y = Math.round(a.y + (b.y - a.y) * t);
         const onBorder = x <= margin || y <= margin || x >= W - 1 - margin || y >= H - 1 - margin;
-        if (onBorder) onBorderCount++;
+        if (onBorder) { onBorderCount++; onSide++; }
         if (onBorder || (x >= 0 && y >= 0 && x < W && y < H && data[y * W + x] > 0)) hit++;
       }
       total += n;
-      weakest = Math.min(weakest, hit / n);
+      sides.push(hit / n);
+      sideBorder.push(onSide / n);
     }
-    return { weakest: weakest, border: onBorderCount / total };
+    return { sides: sides, border: onBorderCount / total, sideBorder: sideBorder };
+  }
+
+  /**
+   * Rang kontrasti bo'yicha qo'llab-quvvatlash: tomonning ichkarisi va tashqarisidagi ranglar
+   * butun tomon bo'ylab bir xil yo'nalishda farq qiladimi. Qirra xaritasi uzilgan, lekin kontrast bor joylarni ham ushlaydi.
+   * `img` — biroz xiralashtirilgan RGBA Mat.
+   */
+  function contrastSupport(q, img) {
+    const W = img.cols;
+    const H = img.rows;
+    const px = img.data;
+    const off = Math.max(3, Math.round(Math.min(W, H) * 0.011));
+    const T = 7;
+    const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
+    const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+    const sides = [];
+    for (let i = 0; i < 4; i++) {
+      const a = q[i];
+      const b = q[(i + 1) % 4];
+      const len = dist(a, b) || 1;
+      const n = Math.max(8, Math.round(len / 3));
+      let nx = -(b.y - a.y) / len;
+      let ny = (b.x - a.x) / len;
+      if (nx * (cx - (a.x + b.x) / 2) + ny * (cy - (a.y + b.y) / 2) < 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const diffs = [];
+      let skipped = 0;
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        const x = a.x + (b.x - a.x) * t;
+        const y = a.y + (b.y - a.y) * t;
+        const xi = Math.round(x + nx * off);
+        const yi = Math.round(y + ny * off);
+        const xo = Math.round(x - nx * off);
+        const yo = Math.round(y - ny * off);
+        if (xo < 0 || yo < 0 || xo >= W || yo >= H || xi < 0 || yi < 0 || xi >= W || yi >= H) {
+          skipped++; // tasvir chetidan chiqib ketgan — hujjat kadrdan o'tgan tomon
+          continue;
+        }
+        const pi = (yi * W + xi) * 4;
+        const po = (yo * W + xo) * 4;
+        diffs.push([px[pi] - px[po], px[pi + 1] - px[po + 1], px[pi + 2] - px[po + 2]]);
+      }
+      let hit = skipped;
+      if (diffs.length) {
+        let mx = 0;
+        let my = 0;
+        let mz = 0;
+        diffs.forEach(function (d) {
+          mx += d[0];
+          my += d[1];
+          mz += d[2];
+        });
+        mx /= diffs.length;
+        my /= diffs.length;
+        mz /= diffs.length;
+        const mag = Math.hypot(mx, my, mz);
+        if (mag >= T) {
+          diffs.forEach(function (d) {
+            if ((d[0] * mx + d[1] * my + d[2] * mz) / mag > T) hit++;
+          });
+        }
+      }
+      sides.push(hit / n);
+    }
+    return sides;
   }
 
   /**
@@ -157,6 +234,7 @@
   function detect(cv, src, opts) {
     const W = src.cols;
     const H = src.rows;
+    const img = src;
     const imgArea = W * H;
     const minArea = imgArea * 0.12;
     const maxArea = imgArea * 0.985;
@@ -172,20 +250,45 @@
     const cands = [];
     try {
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+      const planes = new cv.MatVector();
+      cv.split(src, planes);
       // Yopish (close): matn, ingichka chiziq va sim kabi qorong'i mayda narsalarni "o'chiradi",
       // shunda hujjat bir tekis yorqin dog' bo'lib, chegarasi aniq ko'rinadi.
       const ks = oddAtLeast(Math.min(W, H) * 0.022, 5);
       const kClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(ks, ks));
       cv.morphologyEx(gray, gray, cv.MORPH_CLOSE, kClose);
-      kClose.delete();
       cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
 
       let otsu = cv.threshold(blur, tmp, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
       otsu = Math.min(200, Math.max(40, otsu));
 
-      // Qirra xaritalari: kuchli va zaif (past kontrastli hujjat uchun)
+      // Qirra xaritalari: kuchli va zaif (past kontrastli hujjat uchun). Yorqinlik + R, G, B kanallari birlashtiriladi.
       cv.Canny(blur, edges, otsu * 0.4, otsu);
       cv.Canny(blur, edgesLow, 12, 36);
+      const ch = new cv.Mat();
+      const chE = new cv.Mat();
+      try {
+        for (let c = 0; c < 3; c++) {
+          const plane = planes.get(c);
+          try {
+            cv.morphologyEx(plane, ch, cv.MORPH_CLOSE, kClose);
+            cv.GaussianBlur(ch, ch, new cv.Size(5, 5), 0);
+            let t = cv.threshold(ch, tmp, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+            t = Math.min(200, Math.max(40, t));
+            cv.Canny(ch, chE, t * 0.4, t);
+            cv.bitwise_or(edges, chE, edges);
+            cv.Canny(ch, chE, 12, 36);
+            cv.bitwise_or(edgesLow, chE, edgesLow);
+          } finally {
+            plane.delete();
+          }
+        }
+      } finally {
+        ch.delete();
+        chE.delete();
+        planes.delete();
+        kClose.delete();
+      }
       cv.dilate(edges, support, k3, new cv.Point(-1, -1), 3);
 
       // 1) Kuchli Canny
@@ -206,19 +309,39 @@
       cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k9);
       collectQuads(cv, bin, cv.RETR_EXTERNAL, minArea, maxArea, "otsuInv", cands);
 
-      // Baholash: har tomon haqiqiy qirra ustida bo'lsin, kadr chetiga yopishib olgan nomzodlar jarimalansin.
+      // Baholash: har tomon haqiqiy chegara ustida bo'lsin (qirra yoki rang kontrasti), kadr chetiga yopishganlar jarimalansin.
       const lowSupport = new cv.Mat();
+      const soft = new cv.Mat();
       cv.dilate(edgesLow, lowSupport, k3, new cv.Point(-1, -1), 1);
+      cv.GaussianBlur(src, soft, new cv.Size(5, 5), 0);
       cands.forEach(function (c) {
         const strict = edgeSupport(c.corners, support);
         const low = edgeSupport(c.corners, lowSupport);
-        c.support = strict.weakest;
-        c.supportLow = low.weakest;
+        // Hujjat bir vaqtning o'zida kadrning ham chap, ham o'ng (yoki ham yuqori, ham past)
+        // chetiga "yopishib" chiqishi kamdan-kam uchraydi — bu ko'proq gorizontal/vertikal
+        // tekstura chizig'i (yog'och tomirlari, sim) ni hujjat deb qabul qilib qo'yish belgisi.
+        const oppositeBorder =
+          Math.max(
+            Math.min(strict.sideBorder[1], strict.sideBorder[3]),
+            Math.min(strict.sideBorder[0], strict.sideBorder[2])
+          ) > 0.5;
+        const areaFrac = c.area / (img.cols * img.rows);
+        const con = contrastSupport(c.corners, soft);
+        const sides = [];
+        for (let i = 0; i < 4; i++) sides.push(Math.max(strict.sides[i], low.sides[i] * 0.9, con[i]));
+        c.support = Math.min.apply(null, strict.sides);
+        c.supportLow = Math.min.apply(null, low.sides);
+        c.contrast = Math.min.apply(null, con);
         c.border = strict.border;
-        const s = Math.max(strict.weakest, low.weakest * 0.9);
-        c.score = s >= 0.6 ? c.area * s * (1 - 0.8 * strict.border) : 0;
+        const weakest = Math.min.apply(null, sides);
+        const mean = (sides[0] + sides[1] + sides[2] + sides[3]) / 4;
+        c.weakest = weakest;
+        c.mean = mean;
+        const penalty = oppositeBorder && areaFrac < 0.55 ? 0 : 1;
+        c.score = weakest >= MIN_WEAKEST && mean >= MIN_MEAN ? c.area * mean * (1 - 0.8 * strict.border) * penalty : 0;
       });
       lowSupport.delete();
+      soft.delete();
       // Ishonchlilik tartibi: qirra bo'yicha topilganlar mintaqa bo'yicha topilganlardan ustun
       let best = null;
       const tiers = ["canny", "cannyLow", "otsu", "otsuInv"];
