@@ -10,7 +10,7 @@
   "use strict";
 
   // Nomzodni qabul qilish chegaralari (tomonlarning eng zaifi va o'rtachasi)
-  const MIN_WEAKEST = 0.4;
+  const MIN_WEAKEST = 0.32;
   const MIN_MEAN = 0.7;
 
   function dist(a, b) {
@@ -252,6 +252,14 @@
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       const planes = new cv.MatVector();
       cv.split(src, planes);
+      const rgb = new cv.Mat();
+      const lab = new cv.Mat();
+      const labPlanes = new cv.MatVector();
+      cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+      cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+      cv.split(lab, labPlanes);
+      rgb.delete();
+      lab.delete();
       // Yopish (close): matn, ingichka chiziq va sim kabi qorong'i mayda narsalarni "o'chiradi",
       // shunda hujjat bir tekis yorqin dog' bo'lib, chegarasi aniq ko'rinadi.
       const ks = oddAtLeast(Math.min(W, H) * 0.022, 5);
@@ -268,8 +276,8 @@
       const ch = new cv.Mat();
       const chE = new cv.Mat();
       try {
-        for (let c = 0; c < 3; c++) {
-          const plane = planes.get(c);
+        for (let c = 0; c < 5; c++) {
+          const plane = c < 3 ? planes.get(c) : labPlanes.get(c - 2); // a*, b* — sof rang farqi kanallari
           try {
             cv.morphologyEx(plane, ch, cv.MORPH_CLOSE, kClose);
             cv.GaussianBlur(ch, ch, new cv.Size(5, 5), 0);
@@ -287,6 +295,7 @@
         ch.delete();
         chE.delete();
         planes.delete();
+        labPlanes.delete();
         kClose.delete();
       }
       cv.dilate(edges, support, k3, new cv.Point(-1, -1), 3);
@@ -303,6 +312,17 @@
       cv.threshold(blur, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
       cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k9);
       collectQuads(cv, bin, cv.RETR_EXTERNAL, minArea, maxArea, "otsu", cands);
+
+      // 3.5) Notekis yoritilgan sahna: mahalliy o'rtachaga nisbatan chegara (global Otsu emas)
+      const blockSize = oddAtLeast(Math.min(W, H) * 0.06, 15);
+      cv.adaptiveThreshold(blur, bin, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, blockSize, -4);
+      cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k9);
+      cv.morphologyEx(bin, bin, cv.MORPH_OPEN, k3);
+      collectQuads(cv, bin, cv.RETR_EXTERNAL, minArea, maxArea, "adaptive", cands);
+      cv.adaptiveThreshold(blur, bin, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, blockSize, -4);
+      cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k9);
+      cv.morphologyEx(bin, bin, cv.MORPH_OPEN, k3);
+      collectQuads(cv, bin, cv.RETR_EXTERNAL, minArea, maxArea, "adaptiveInv", cands);
 
       // 4) Qorong'i hujjat yorug' fonda — teskari Otsu
       cv.threshold(blur, bin, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
@@ -344,7 +364,7 @@
       soft.delete();
       // Ishonchlilik tartibi: qirra bo'yicha topilganlar mintaqa bo'yicha topilganlardan ustun
       let best = null;
-      const tiers = ["canny", "cannyLow", "otsu", "otsuInv"];
+      const tiers = ["canny", "cannyLow", "adaptive", "adaptiveInv", "otsu", "otsuInv"];
       for (let t = 0; t < tiers.length && !best; t++) {
         cands.forEach(function (c) {
           if (c.tag === tiers[t] && c.score > 0 && (!best || c.score > best.score)) best = c;

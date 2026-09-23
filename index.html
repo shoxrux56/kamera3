@@ -208,7 +208,7 @@ var PDF_URLS = [
   "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
   "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"
 ];
-var STABLE_FRAMES = 6;      // ~0.8 s qimirlamay tursa, avto olinadi
+var STABLE_FRAMES = 4;      // ~0.5 s qimirlamay tursa, avto olinadi
 var MAX_SIDE = 2000;        // sahifaning uzun tomoni (px)
 var DETECT_WIDTH = 480;     // jonli aniqlash uchun kichraytirilgan kenglik
 var MAX_PDF_BYTES = 48 * 1024 * 1024;
@@ -351,7 +351,7 @@ function step() {
   var diag = Math.hypot(vw, vh);
   var cur = detectFrom(video, vw, vh);
   if (cur) {
-    if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.02) st.stable++; else st.stable = 0;
+    if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.035) st.stable++; else st.stable = 0;
     st.target = cur; st.misses = 0;
     if (!st.armed && st.captured && DocScanner.cornerShift(st.captured, cur) > diag * 0.08) st.armed = true;
   } else {
