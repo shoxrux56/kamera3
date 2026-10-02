@@ -115,6 +115,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lamp); outl
   <section id="cam" class="view active">
     <header class="top">
       <button id="btnAuto" class="chip" aria-pressed="true">Avto olish: yoqilgan</button>
+      <button id="btnTorch" class="chip" hidden>Chiroq</button>
       <button id="btnGallery" class="chip">Galereyadan</button>
     </header>
     <div id="viewport">
@@ -284,7 +285,7 @@ async function startCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("insecure");
     st.stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 2560 }, height: { ideal: 1440 } }
     });
   } catch (e) {
     var msg = "Kameraga ruxsat berilmadi. Brauzer sozlamalaridan kameraga ruxsat bering va qayta urinib ko‘ring.";
@@ -297,6 +298,7 @@ async function startCamera() {
   video.srcObject = st.stream;
   try { await video.play(); } catch (_) {}
   try { if (navigator.wakeLock) st.wake = await navigator.wakeLock.request("screen"); } catch (_) {}
+  initTrack();
   st.camOn = true; st.target = null; st.shown = null; st.stable = 0; st.misses = 0; st.armed = true;
   if (video.videoWidth) layout();
   cancelAnimationFrame(st.raf); st.raf = requestAnimationFrame(loop);
@@ -307,6 +309,24 @@ function stopCamera() {
   st.stream = null; video.srcObject = null;
   try { if (st.wake) st.wake.release(); } catch (_) {} st.wake = null;
 }
+/* ---------- chiroq va fokus ---------- */
+var torchOn = false;
+async function initTrack() {
+  torchOn = false; $("btnTorch").classList.remove("on");
+  var tr = st.stream && st.stream.getVideoTracks()[0];
+  var caps = tr && tr.getCapabilities ? tr.getCapabilities() : {};
+  $("btnTorch").hidden = !caps.torch;
+  try { if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) await tr.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (_) {}
+}
+async function toggleTorch() {
+  var tr = st.stream && st.stream.getVideoTracks()[0];
+  if (!tr) return;
+  try {
+    await tr.applyConstraints({ advanced: [{ torch: !torchOn }] });
+    torchOn = !torchOn; $("btnTorch").classList.toggle("on", torchOn);
+  } catch (_) { toast("Chiroqni yoqib bo‘lmadi."); }
+}
+
 function layout() {
   var vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return;
@@ -351,7 +371,7 @@ function step() {
   var diag = Math.hypot(vw, vh);
   var cur = detectFrom(video, vw, vh);
   if (cur) {
-    if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.035) st.stable++; else st.stable = 0;
+    if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.02) st.stable++; else st.stable = 0;
     st.target = cur; st.misses = 0;
     if (!st.armed && st.captured && DocScanner.cornerShift(st.captured, cur) > diag * 0.08) st.armed = true;
   } else {
@@ -391,10 +411,15 @@ async function capture() {
   try {
     var vw = video.videoWidth, vh = video.videoHeight;
     var c = makeCanvas(vw, vh); c.getContext("2d").drawImage(video, 0, 0);
-    var corners = detectFrom(c, vw, vh) || (st.target ? st.target.map(function (p) { return { x: p.x, y: p.y }; }) : null);
-    st.captured = corners;
+    var shown = st.target ? st.target.map(function (p) { return { x: p.x, y: p.y }; }) : null; // foydalanuvchi ko'rgan ramka
     $("flash").classList.remove("go"); void $("flash").offsetWidth; $("flash").classList.add("go");
     if (navigator.vibrate) navigator.vibrate(30);
+    await new Promise(function (r) { requestAnimationFrame(function () { setTimeout(r, 0); }); }); // flash chizilib olsin
+    var fresh = detectFrom(c, vw, vh, 800); // jonli aniqlashdan aniqroq
+    var corners = fresh;
+    // yangi natija ekrandagi ramkadan keskin farq qilsa (boshqa nomzod tanlangan), siz ko'rgan ramka olinadi
+    if (!fresh || (shown && DocScanner.cornerShift(shown, fresh) > Math.hypot(vw, vh) * 0.05)) corners = shown || fresh;
+    st.captured = corners;
     await addPage(c, corners);
   } catch (e) { console.error(e); toast("Rasmni qayta ishlashda xato: " + (e && e.message ? e.message : e)); }
   finally { st.busy = false; }
@@ -510,11 +535,14 @@ async function setFilter(mode) {
   if (mode === st.filter) return;
   st.filter = mode;
   document.querySelectorAll(".filters .chip").forEach(function (b) { b.classList.toggle("on", b.dataset.mode === mode); });
-  for (var i = 0; i < st.pages.length; i++) {
-    busy("Qayta ishlanmoqda… " + (i + 1) + "/" + st.pages.length, i / st.pages.length);
-    await renderPage(st.pages[i]);
-  }
-  unbusy(); renderGrid(); refreshCounter();
+  try {
+    for (var i = 0; i < st.pages.length; i++) {
+      busy("Qayta ishlanmoqda… " + (i + 1) + "/" + st.pages.length, i / st.pages.length);
+      await renderPage(st.pages[i]);
+    }
+  } catch (e) { console.error(e); toast("Uslubni qo‘llashda xato: " + (e && e.message ? e.message : e)); }
+  finally { unbusy(); }
+  renderGrid(); refreshCounter();
 }
 
 /* ---------- burchak muharriri ---------- */
@@ -727,6 +755,7 @@ $("btnAuto").onclick = function () {
   st.auto = !st.auto; this.setAttribute("aria-pressed", String(st.auto));
   this.textContent = "Avto olish: " + (st.auto ? "yoqilgan" : "o‘chiq"); updateHint();
 };
+$("btnTorch").onclick = toggleTorch;
 $("btnGallery").onclick = function () { $("fileInput").click(); };
 $("fileInput").onchange = function () { if (this.files.length) importFiles(this.files); this.value = ""; };
 $("btnDone").onclick = $("btnPages").onclick = function () { if (st.pages.length) showView("review"); };
@@ -744,6 +773,7 @@ document.querySelectorAll(".filters .chip").forEach(function (b) { b.onclick = f
 window.addEventListener("beforeunload", function (e) { if (st.pages.length) { e.preventDefault(); e.returnValue = ""; } });
 
 /* ---------- ishga tushirish ---------- */
+if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("sw.js").catch(function () {});
 startCamera();
 loadCV().catch(function (e) {
   console.error(e);
