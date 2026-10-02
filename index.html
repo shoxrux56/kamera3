@@ -382,7 +382,7 @@ async function detectFinal(canvas, sw, sh, work) {
 var lastDet = 0;
 function loop(t) {
   if (!st.camOn) return;
-  if (st.cvReady && video.readyState >= 2 && !st.detBusy && t - lastDet > 130) {
+  if (st.cvReady && video.readyState >= 2 && !st.detBusy && t - lastDet > (st.mlReady ? 130 : 450)) {
     lastDet = t; step().catch(function (e) { console.error(e); });
   }
   draw();
@@ -415,6 +415,7 @@ function updateHint() {
   else if (!st.target) t = "Hujjatni kadr ichiga qo‘ying";
   else if (st.auto) t = st.armed ? (st.stable >= STABLE_FRAMES ? "Olinmoqda…" : "Qimirlatmang…") : "Keyingi sahifani qo‘ying";
   else t = "Hujjat topildi — tugmani bosing";
+  t += st.mlReady ? "  ·  AI" : "  ·  oddiy";
   var h = $("hint"); if (h.textContent !== t) h.textContent = t;
 }
 function draw() {
@@ -793,8 +794,8 @@ document.querySelectorAll(".filters .chip").forEach(function (b) { b.onclick = f
 window.addEventListener("beforeunload", function (e) { if (st.pages.length) { e.preventDefault(); e.returnValue = ""; } });
 
 /* AI model tayyor bo'lganda / yuklanmaganda */
-window.addEventListener("ml-ready", function () { st.mlReady = true; toast("AI aniqlash yoqildi"); });
-window.addEventListener("ml-failed", function () { console.warn("AI model yuklanmadi, oddiy aniqlash ishlaydi."); });
+window.addEventListener("ml-ready", function () { st.mlReady = true; toast("AI aniqlash yoqildi"); updateHint(); });
+window.addEventListener("ml-failed", function (e) { var m = e && e.detail ? String(e.detail) : ""; console.warn("AI model yuklanmadi:", m); toast("AI yuklanmadi, oddiy aniqlash ishlaydi. " + m.slice(0, 120)); updateHint(); });
 if (window.MLDetect) st.mlReady = true;
 
 /* ---------- ishga tushirish ---------- */
@@ -812,11 +813,11 @@ var SCANIC_URLS = [
   "https://cdn.jsdelivr.net/npm/scanic/dist/scanic.js"
 ];
 (async function () {
-  var mod = null;
+  var mod = null, lastErr = "";
   for (var i = 0; i < SCANIC_URLS.length && !mod; i++) {
-    try { mod = await import(SCANIC_URLS[i]); } catch (e) { console.warn("scanic yuklanmadi:", SCANIC_URLS[i], e); }
+    try { mod = await import(SCANIC_URLS[i]); } catch (e) { lastErr = String(e && e.message || e); console.warn("scanic yuklanmadi:", SCANIC_URLS[i], e); }
   }
-  if (!mod || !mod.Scanner) { window.dispatchEvent(new Event("ml-failed")); return; }
+  if (!mod || !mod.Scanner) { window.dispatchEvent(new CustomEvent("ml-failed", { detail: lastErr || "scanic.Scanner topilmadi" })); return; }
   try {
     var scanner = new mod.Scanner({ detector: "ml" });
     await scanner.initialize();
@@ -827,7 +828,7 @@ var SCANIC_URLS = [
     window.dispatchEvent(new Event("ml-ready"));
   } catch (e) {
     console.warn("AI model ishga tushmadi:", e);
-    window.dispatchEvent(new Event("ml-failed"));
+    window.dispatchEvent(new CustomEvent("ml-failed", { detail: String(e && e.message || e) }));
   }
 })();
 </script>
