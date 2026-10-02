@@ -27,10 +27,8 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 button:disabled { opacity: .4; cursor: default; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
 [hidden] { display: none !important; }
-
 .view { position: absolute; inset: 0; display: none; flex-direction: column; }
 .view.active { display: flex; }
-
 .chip { padding: 8px 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; }
 .chip[aria-pressed="true"], .chip.on { border-color: var(--lamp); color: var(--lamp); }
 .primary { background: var(--lamp); color: var(--lamp-ink); font-weight: 650; padding: 12px 20px; border-radius: 12px; }
@@ -98,6 +96,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lamp); outl
 #toast { position: absolute; left: 50%; bottom: calc(var(--safe-b) + 110px); transform: translateX(-50%); z-index: 40; max-width: min(92vw, 420px);
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; text-align: center; }
 #toast.show { opacity: 1; }
+
 /* --- Telegram sozlamalari --- */
 #settings .body { flex: 1; overflow-y: auto; width: 100%; max-width: 520px; margin: 0 auto; padding: calc(var(--safe-t) + 16px) 16px 16px; display: flex; flex-direction: column; gap: 16px; }
 #settings h1 { font-size: 18px; font-weight: 650; }
@@ -115,7 +114,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lamp); outl
   <section id="cam" class="view active">
     <header class="top">
       <button id="btnAuto" class="chip" aria-pressed="true">Avto olish: yoqilgan</button>
-      <button id="btnTorch" class="chip" hidden>Chiroq</button>
       <button id="btnGallery" class="chip">Galereyadan</button>
     </header>
     <div id="viewport">
@@ -209,9 +207,9 @@ var PDF_URLS = [
   "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
   "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"
 ];
-var STABLE_FRAMES = 4;      // ~0.5 s qimirlamay tursa, avto olinadi
-var MAX_SIDE = 2000;        // sahifaning uzun tomoni (px)
-var DETECT_WIDTH = 480;     // jonli aniqlash uchun kichraytirilgan kenglik
+var STABLE_FRAMES = 4;          // ~0.5 s qimirlamay tursa, avto olinadi
+var MAX_SIDE = 2000;            // sahifaning uzun tomoni (px)
+var DETECT_WIDTH = 480;         // jonli aniqlash uchun kichraytirilgan kenglik
 var MAX_PDF_BYTES = 48 * 1024 * 1024;
 
 var $ = function (id) { return document.getElementById(id); };
@@ -220,7 +218,7 @@ var detCanvas = document.createElement("canvas");
 var dctx = detCanvas.getContext("2d", { willReadFrequently: true });
 
 var st = {
-  cvReady: false, pages: [], filter: "color", auto: true,
+  cvReady: false, mlReady: false, detBusy: false, pages: [], filter: "color", auto: true,
   target: null, shown: null, stable: 0, misses: 0, armed: true, captured: null,
   lastCapture: 0, pdfBlob: null, busy: false, stream: null, camOn: false, raf: 0, uid: 0, wake: null
 };
@@ -270,7 +268,7 @@ function unbusy() { $("busy").hidden = true; }
 async function loadCV() {
   await loadFirst(CV_URLS);
   var c = window.cv;
-  if (c && typeof c.then === "function") c = await c;               // yangi buildlar Promise qaytaradi
+  if (c && typeof c.then === "function") c = await c;           // yangi buildlar Promise qaytaradi
   else if (c && !c.Mat) await new Promise(function (r) { c.onRuntimeInitialized = r; });
   window.cv = c;
   st.cvReady = true;
@@ -285,7 +283,7 @@ async function startCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("insecure");
     st.stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 2560 }, height: { ideal: 1440 } }
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
     });
   } catch (e) {
     var msg = "Kameraga ruxsat berilmadi. Brauzer sozlamalaridan kameraga ruxsat bering va qayta urinib ko‘ring.";
@@ -298,7 +296,6 @@ async function startCamera() {
   video.srcObject = st.stream;
   try { await video.play(); } catch (_) {}
   try { if (navigator.wakeLock) st.wake = await navigator.wakeLock.request("screen"); } catch (_) {}
-  initTrack();
   st.camOn = true; st.target = null; st.shown = null; st.stable = 0; st.misses = 0; st.armed = true;
   if (video.videoWidth) layout();
   cancelAnimationFrame(st.raf); st.raf = requestAnimationFrame(loop);
@@ -309,24 +306,6 @@ function stopCamera() {
   st.stream = null; video.srcObject = null;
   try { if (st.wake) st.wake.release(); } catch (_) {} st.wake = null;
 }
-/* ---------- chiroq va fokus ---------- */
-var torchOn = false;
-async function initTrack() {
-  torchOn = false; $("btnTorch").classList.remove("on");
-  var tr = st.stream && st.stream.getVideoTracks()[0];
-  var caps = tr && tr.getCapabilities ? tr.getCapabilities() : {};
-  $("btnTorch").hidden = !caps.torch;
-  try { if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) await tr.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (_) {}
-}
-async function toggleTorch() {
-  var tr = st.stream && st.stream.getVideoTracks()[0];
-  if (!tr) return;
-  try {
-    await tr.applyConstraints({ advanced: [{ torch: !torchOn }] });
-    torchOn = !torchOn; $("btnTorch").classList.toggle("on", torchOn);
-  } catch (_) { toast("Chiroqni yoqib bo‘lmadi."); }
-}
-
 function layout() {
   var vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return;
@@ -346,6 +325,7 @@ document.addEventListener("visibilitychange", function () {
 });
 
 /* ---------- aniqlash ---------- */
+// Klassik usul (OpenCV, sinxron)
 function detectFrom(source, sw, sh, work) {
   var dw = Math.min(work || DETECT_WIDTH, sw), dh = Math.round(sh * dw / sw);
   detCanvas.width = dw; detCanvas.height = dh;
@@ -358,28 +338,76 @@ function detectFrom(source, sw, sh, work) {
   return c.map(function (p) { return { x: p.x * r, y: p.y * r }; });
 }
 
+// AI model (DocCornerNet): source ning o'z koordinatalarida 4 burchak qaytaradi yoki null
+async function mlCorners(source, sw, sh) {
+  if (!st.mlReady || !window.MLDetect) return null;
+  try {
+    var c = await window.MLDetect(source);
+    if (!c) return null;
+    var pts = [c.topLeft, c.topRight, c.bottomRight, c.bottomLeft];
+    for (var i = 0; i < 4; i++) if (!pts[i] || !isFinite(pts[i].x) || !isFinite(pts[i].y)) return null;
+    var mx = 0; pts.forEach(function (p) { mx = Math.max(mx, Math.abs(p.x), Math.abs(p.y)); });
+    var kx = mx <= 1.5 ? sw : 1, ky = mx <= 1.5 ? sh : 1;   // 0..1 normallashgan bo'lsa, kattalashtiramiz
+    pts = pts.map(function (p) {
+      return { x: Math.max(0, Math.min(sw - 1, p.x * kx)), y: Math.max(0, Math.min(sh - 1, p.y * ky)) };
+    });
+    var a = 0;
+    for (var j = 0; j < 4; j++) { var p1 = pts[j], p2 = pts[(j + 1) % 4]; a += p1.x * p2.y - p2.x * p1.y; }
+    if (Math.abs(a) / 2 < sw * sh * 0.05) return null;       // juda kichik, ishonchsiz
+    return DocScanner.orderCorners(pts);
+  } catch (e) { console.warn("AI aniqlash xatosi:", e); return null; }
+}
+
+// Jonli kadr uchun: avval AI, topilmasa klassik
+async function detectLive(source, sw, sh) {
+  var dw = Math.min(DETECT_WIDTH, sw), dh = Math.round(sh * dw / sw);
+  if (st.mlReady) {
+    var small = makeCanvas(dw, dh);
+    small.getContext("2d").drawImage(source, 0, 0, dw, dh);
+    var m = await mlCorners(small, dw, dh);
+    if (m) { var r = sw / dw; return m.map(function (p) { return { x: p.x * r, y: p.y * r }; }); }
+  }
+  return detectFrom(source, sw, sh);
+}
+
+// Yakuniy rasm uchun: AI taxminiy burchak beradi, klassik usul uni chetga aniq "yopishtiradi"
+async function detectFinal(canvas, sw, sh, work) {
+  var ml = await mlCorners(canvas, sw, sh);
+  var cl = null;
+  try { cl = detectFrom(canvas, sw, sh, work || 720); } catch (e) { console.warn(e); }
+  if (ml && cl) return DocScanner.cornerShift(ml, cl) < Math.hypot(sw, sh) * 0.04 ? cl : ml;
+  return ml || cl;
+}
+
 var lastDet = 0;
 function loop(t) {
   if (!st.camOn) return;
-  if (st.cvReady && video.readyState >= 2 && t - lastDet > 130) { lastDet = t; try { step(); } catch (e) { console.error(e); } }
+  if (st.cvReady && video.readyState >= 2 && !st.detBusy && t - lastDet > 130) {
+    lastDet = t; step().catch(function (e) { console.error(e); });
+  }
   draw();
   st.raf = requestAnimationFrame(loop);
 }
-function step() {
-  var vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw) return;
-  var diag = Math.hypot(vw, vh);
-  var cur = detectFrom(video, vw, vh);
-  if (cur) {
-    if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.02) st.stable++; else st.stable = 0;
-    st.target = cur; st.misses = 0;
-    if (!st.armed && st.captured && DocScanner.cornerShift(st.captured, cur) > diag * 0.08) st.armed = true;
-  } else {
-    st.misses++;
-    if (st.misses >= 3) { st.target = null; st.stable = 0; st.armed = true; }
-  }
-  updateHint();
-  if (st.auto && st.armed && st.target && st.stable >= STABLE_FRAMES && performance.now() - st.lastCapture > 1200) capture();
+async function step() {
+  if (st.detBusy) return;
+  st.detBusy = true;
+  try {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw) return;
+    var diag = Math.hypot(vw, vh);
+    var cur = await detectLive(video, vw, vh);
+    if (!st.camOn) return;
+    if (cur) {
+      if (st.target && DocScanner.cornerShift(st.target, cur) < diag * 0.035) st.stable++; else st.stable = 0;
+      st.target = cur; st.misses = 0;
+      if (!st.armed && st.captured && DocScanner.cornerShift(st.captured, cur) > diag * 0.08) st.armed = true;
+    } else {
+      st.misses++;
+      if (st.misses >= 3) { st.target = null; st.stable = 0; st.armed = true; }
+    }
+    updateHint();
+    if (st.auto && st.armed && st.target && st.stable >= STABLE_FRAMES && performance.now() - st.lastCapture > 1200) capture();
+  } finally { st.detBusy = false; }
 }
 function updateHint() {
   var t;
@@ -411,15 +439,10 @@ async function capture() {
   try {
     var vw = video.videoWidth, vh = video.videoHeight;
     var c = makeCanvas(vw, vh); c.getContext("2d").drawImage(video, 0, 0);
-    var shown = st.target ? st.target.map(function (p) { return { x: p.x, y: p.y }; }) : null; // foydalanuvchi ko'rgan ramka
+    var corners = (await detectFinal(c, vw, vh)) || (st.target ? st.target.map(function (p) { return { x: p.x, y: p.y }; }) : null);
+    st.captured = corners;
     $("flash").classList.remove("go"); void $("flash").offsetWidth; $("flash").classList.add("go");
     if (navigator.vibrate) navigator.vibrate(30);
-    await new Promise(function (r) { requestAnimationFrame(function () { setTimeout(r, 0); }); }); // flash chizilib olsin
-    var fresh = detectFrom(c, vw, vh, 800); // jonli aniqlashdan aniqroq
-    var corners = fresh;
-    // yangi natija ekrandagi ramkadan keskin farq qilsa (boshqa nomzod tanlangan), siz ko'rgan ramka olinadi
-    if (!fresh || (shown && DocScanner.cornerShift(shown, fresh) > Math.hypot(vw, vh) * 0.05)) corners = shown || fresh;
-    st.captured = corners;
     await addPage(c, corners);
   } catch (e) { console.error(e); toast("Rasmni qayta ishlashda xato: " + (e && e.message ? e.message : e)); }
   finally { st.busy = false; }
@@ -481,7 +504,7 @@ async function importFiles(files) {
       var k = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
       var c = makeCanvas(Math.round(bmp.width * k), Math.round(bmp.height * k));
       c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height); if (bmp.close) bmp.close();
-      await addPage(c, detectFrom(c, c.width, c.height, 640));
+      await addPage(c, await detectFinal(c, c.width, c.height, 720));
     } catch (e) { console.error(e); toast("Rasmni o‘qib bo‘lmadi: " + f.name); }
     busy("Rasmlar qayta ishlanmoqda… " + (++i) + "/" + list.length, i / list.length);
   }
@@ -535,20 +558,17 @@ async function setFilter(mode) {
   if (mode === st.filter) return;
   st.filter = mode;
   document.querySelectorAll(".filters .chip").forEach(function (b) { b.classList.toggle("on", b.dataset.mode === mode); });
-  try {
-    for (var i = 0; i < st.pages.length; i++) {
-      busy("Qayta ishlanmoqda… " + (i + 1) + "/" + st.pages.length, i / st.pages.length);
-      await renderPage(st.pages[i]);
-    }
-  } catch (e) { console.error(e); toast("Uslubni qo‘llashda xato: " + (e && e.message ? e.message : e)); }
-  finally { unbusy(); }
-  renderGrid(); refreshCounter();
+  for (var i = 0; i < st.pages.length; i++) {
+    busy("Qayta ishlanmoqda… " + (i + 1) + "/" + st.pages.length, i / st.pages.length);
+    await renderPage(st.pages[i]);
+  }
+  unbusy(); renderGrid(); refreshCounter();
 }
 
 /* ---------- burchak muharriri ---------- */
 var ed = { page: null, bmp: null, scale: 1, pts: [], drag: -1 };
 async function openEditor(page) {
-  busy("Ochilmoqda…"); 
+  busy("Ochilmoqda…");
   try { ed.bmp = await createImageBitmap(page.orig); } finally { unbusy(); }
   ed.page = page;
   $("editor").hidden = false;
@@ -623,6 +643,7 @@ async function downloadPdf() {
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
   } catch (e) { toast("PDF yaratib bo‘lmadi: " + e.message); } finally { unbusy(); }
 }
+
 /* ---------- Telegram (serversiz: brauzerdan to'g'ridan-to'g'ri Bot API) ---------- */
 var TG = "https://api.telegram.org/bot";
 function loadCfg() { try { return JSON.parse(localStorage.getItem("docscan_tg") || "{}") || {}; } catch (_) { return {}; } }
@@ -755,7 +776,6 @@ $("btnAuto").onclick = function () {
   st.auto = !st.auto; this.setAttribute("aria-pressed", String(st.auto));
   this.textContent = "Avto olish: " + (st.auto ? "yoqilgan" : "o‘chiq"); updateHint();
 };
-$("btnTorch").onclick = toggleTorch;
 $("btnGallery").onclick = function () { $("fileInput").click(); };
 $("fileInput").onchange = function () { if (this.files.length) importFiles(this.files); this.value = ""; };
 $("btnDone").onclick = $("btnPages").onclick = function () { if (st.pages.length) showView("review"); };
@@ -772,13 +792,44 @@ $("btnFindChat").onclick = findChat;
 document.querySelectorAll(".filters .chip").forEach(function (b) { b.onclick = function () { setFilter(b.dataset.mode); }; });
 window.addEventListener("beforeunload", function (e) { if (st.pages.length) { e.preventDefault(); e.returnValue = ""; } });
 
+/* AI model tayyor bo'lganda / yuklanmaganda */
+window.addEventListener("ml-ready", function () { st.mlReady = true; toast("AI aniqlash yoqildi"); });
+window.addEventListener("ml-failed", function () { console.warn("AI model yuklanmadi, oddiy aniqlash ishlaydi."); });
+if (window.MLDetect) st.mlReady = true;
+
 /* ---------- ishga tushirish ---------- */
-if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("sw.js").catch(function () {});
 startCamera();
 loadCV().catch(function (e) {
   console.error(e);
   $("hint").textContent = "Skaner kutubxonasi yuklanmadi. Internetni tekshirib, sahifani yangilang.";
 });
+</script>
+
+<!-- AI model (scanic + DocCornerNet): kamera va OpenCV dan mustaqil yuklanadi; xato bo'lsa oddiy aniqlash ishlayveradi -->
+<script type="module">
+var SCANIC_URLS = [
+  "https://unpkg.com/scanic/dist/scanic.js",
+  "https://cdn.jsdelivr.net/npm/scanic/dist/scanic.js"
+];
+(async function () {
+  var mod = null;
+  for (var i = 0; i < SCANIC_URLS.length && !mod; i++) {
+    try { mod = await import(SCANIC_URLS[i]); } catch (e) { console.warn("scanic yuklanmadi:", SCANIC_URLS[i], e); }
+  }
+  if (!mod || !mod.Scanner) { window.dispatchEvent(new Event("ml-failed")); return; }
+  try {
+    var scanner = new mod.Scanner({ detector: "ml" });
+    await scanner.initialize();
+    window.MLDetect = async function (src) {
+      var r = await scanner.scan(src, { mode: "detect", detector: "ml" });
+      return r && r.success && r.corners ? r.corners : null;
+    };
+    window.dispatchEvent(new Event("ml-ready"));
+  } catch (e) {
+    console.warn("AI model ishga tushmadi:", e);
+    window.dispatchEvent(new Event("ml-failed"));
+  }
+})();
 </script>
 </body>
 </html>
