@@ -2,6 +2,12 @@
  * scanner.js — hujjatni topish, perspektivani tekislash va skan filtrlari.
  * OpenCV.js ustida ishlaydi. Brauzerda `DocScanner`, node'da module.exports sifatida chiqadi.
  * Barcha funksiyalar `cv` ni birinchi argument sifatida oladi.
+ *
+ * Tuzatishlar (oldingi versiyaga nisbatan):
+ *  1) Ichki to'rtburchak tuzatishi: tanlangan nomzodni o'z ichiga oladigan kattaroq,
+ *     yaxshi qo'llab-quvvatlangan nomzod bo'lsa, o'sha olinadi (hujjat to'liq kesiladi).
+ *  2) detect() ichida istisno bo'lsa ham hamma Mat xotiradan bo'shatiladi (oqish yo'q).
+ *  3) "Rangli" uslub endi haqiqiy skan ko'rinishiga keltiriladi (COLOR_ENHANCE = false qilsangiz, eski holat).
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
@@ -12,6 +18,9 @@
   // Nomzodni qabul qilish chegaralari (tomonlarning eng zaifi va o'rtachasi)
   const MIN_WEAKEST = 0.32;
   const MIN_MEAN = 0.7;
+
+  // Rangli uslubda yorug'lik tekislansin va fon oqarsin (false = rasm o'zgarishsiz qoladi)
+  const COLOR_ENHANCE = true;
 
   function dist(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
@@ -72,6 +81,24 @@
     let m = 0;
     for (let i = 0; i < 4; i++) m = Math.max(m, dist(a[i], b[i]));
     return m;
+  }
+
+  /**
+   * inner to'rtburchakning barcha burchaklari outer ichida yotadimi (tol piksel ruxsat bilan).
+   * outer — orderCorners tartibida (TL, TR, BR, BL), tasvir koordinatalarida (y pastga o'sadi).
+   */
+  function quadInside(inner, outer, tol) {
+    for (let i = 0; i < inner.length; i++) {
+      const p = inner[i];
+      for (let j = 0; j < 4; j++) {
+        const a = outer[j];
+        const b = outer[(j + 1) % 4];
+        const len = dist(a, b) || 1;
+        const cross = ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len;
+        if (cross < -tol) return false;
+      }
+    }
+    return true;
   }
 
   /** Ikkilik tasvirdagi barcha "hujjatsimon" to'rtburchak nomzodlarni `out` ga yig'adi. */
@@ -238,6 +265,7 @@
     const imgArea = W * H;
     const minArea = imgArea * 0.12;
     const maxArea = imgArea * 0.985;
+
     const gray = new cv.Mat();
     const blur = new cv.Mat();
     const edges = new cv.Mat();
@@ -248,31 +276,44 @@
     const k3 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
     const k9 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
     const cands = [];
+
+    // Istisno bo'lsa ham bo'shatilishi uchun tashqarida e'lon qilinadi
+    let planes = null;
+    let labPlanes = null;
+    let kClose = null;
+    let lowSupport = null;
+    let soft = null;
+
     try {
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      const planes = new cv.MatVector();
+      planes = new cv.MatVector();
       cv.split(src, planes);
+      labPlanes = new cv.MatVector();
       const rgb = new cv.Mat();
       const lab = new cv.Mat();
-      const labPlanes = new cv.MatVector();
-      cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
-      cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
-      cv.split(lab, labPlanes);
-      rgb.delete();
-      lab.delete();
+      try {
+        cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+        cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+        cv.split(lab, labPlanes);
+      } finally {
+        rgb.delete();
+        lab.delete();
+      }
+
       // Yopish (close): matn, ingichka chiziq va sim kabi qorong'i mayda narsalarni "o'chiradi",
       // shunda hujjat bir tekis yorqin dog' bo'lib, chegarasi aniq ko'rinadi.
       const ks = oddAtLeast(Math.min(W, H) * 0.022, 5);
-      const kClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(ks, ks));
+      kClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(ks, ks));
       cv.morphologyEx(gray, gray, cv.MORPH_CLOSE, kClose);
       cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
 
       let otsu = cv.threshold(blur, tmp, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
       otsu = Math.min(200, Math.max(40, otsu));
 
-      // Qirra xaritalari: kuchli va zaif (past kontrastli hujjat uchun). Yorqinlik + R, G, B kanallari birlashtiriladi.
+      // Qirra xaritalari: kuchli va zaif (past kontrastli hujjat uchun). Yorqinlik + R, G, B + a*, b* kanallari birlashtiriladi.
       cv.Canny(blur, edges, otsu * 0.4, otsu);
       cv.Canny(blur, edgesLow, 12, 36);
+
       const ch = new cv.Mat();
       const chE = new cv.Mat();
       try {
@@ -294,10 +335,8 @@
       } finally {
         ch.delete();
         chE.delete();
-        planes.delete();
-        labPlanes.delete();
-        kClose.delete();
       }
+
       cv.dilate(edges, support, k3, new cv.Point(-1, -1), 3);
 
       // 1) Kuchli Canny
@@ -319,6 +358,7 @@
       cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k9);
       cv.morphologyEx(bin, bin, cv.MORPH_OPEN, k3);
       collectQuads(cv, bin, cv.RETR_EXTERNAL, minArea, maxArea, "adaptive", cands);
+
       cv.adaptiveThreshold(blur, bin, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, blockSize, -4);
       cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k9);
       cv.morphologyEx(bin, bin, cv.MORPH_OPEN, k3);
@@ -330,13 +370,15 @@
       collectQuads(cv, bin, cv.RETR_EXTERNAL, minArea, maxArea, "otsuInv", cands);
 
       // Baholash: har tomon haqiqiy chegara ustida bo'lsin (qirra yoki rang kontrasti), kadr chetiga yopishganlar jarimalansin.
-      const lowSupport = new cv.Mat();
-      const soft = new cv.Mat();
+      lowSupport = new cv.Mat();
+      soft = new cv.Mat();
       cv.dilate(edgesLow, lowSupport, k3, new cv.Point(-1, -1), 1);
       cv.GaussianBlur(src, soft, new cv.Size(5, 5), 0);
+
       cands.forEach(function (c) {
         const strict = edgeSupport(c.corners, support);
         const low = edgeSupport(c.corners, lowSupport);
+
         // Hujjat bir vaqtning o'zida kadrning ham chap, ham o'ng (yoki ham yuqori, ham past)
         // chetiga "yopishib" chiqishi kamdan-kam uchraydi — bu ko'proq gorizontal/vertikal
         // tekstura chizig'i (yog'och tomirlari, sim) ni hujjat deb qabul qilib qo'yish belgisi.
@@ -346,22 +388,25 @@
             Math.min(strict.sideBorder[0], strict.sideBorder[2])
           ) > 0.5;
         const areaFrac = c.area / (img.cols * img.rows);
+
         const con = contrastSupport(c.corners, soft);
         const sides = [];
         for (let i = 0; i < 4; i++) sides.push(Math.max(strict.sides[i], low.sides[i] * 0.9, con[i]));
+
         c.support = Math.min.apply(null, strict.sides);
         c.supportLow = Math.min.apply(null, low.sides);
         c.contrast = Math.min.apply(null, con);
         c.border = strict.border;
+
         const weakest = Math.min.apply(null, sides);
         const mean = (sides[0] + sides[1] + sides[2] + sides[3]) / 4;
         c.weakest = weakest;
         c.mean = mean;
+
         const penalty = oppositeBorder && areaFrac < 0.55 ? 0 : 1;
         c.score = weakest >= MIN_WEAKEST && mean >= MIN_MEAN ? c.area * mean * (1 - 0.8 * strict.border) * penalty : 0;
       });
-      lowSupport.delete();
-      soft.delete();
+
       // Ishonchlilik tartibi: qirra bo'yicha topilganlar mintaqa bo'yicha topilganlardan ustun
       let best = null;
       const tiers = ["canny", "cannyLow", "adaptive", "adaptiveInv", "otsu", "otsuInv"];
@@ -370,7 +415,21 @@
           if (c.tag === tiers[t] && c.score > 0 && (!best || c.score > best.score)) best = c;
         });
       }
+
+      // Ichki to'rtburchak tuzatishi: tanlangan nomzod hujjat ichidagi ramka/jadval/rasm bo'lishi mumkin.
+      // Uni o'z ichiga oladigan, kattaroq va yaxshi qo'llab-quvvatlangan nomzod bo'lsa, o'shani olamiz.
+      // (Kadr chetiga yopishgan yoki deyarli butun kadrni egallagan nomzodlar bunga kirmaydi.)
+      if (best) {
+        const inner = best;
+        cands.forEach(function (c) {
+          if (c.score <= 0 || c.area <= inner.area * 1.12 || c.area <= best.area) return;
+          if (c.weakest < 0.5 || c.mean < 0.8 || c.border > 0.2 || c.area > imgArea * 0.9) return;
+          if (quadInside(inner.corners, c.corners, 6)) best = c;
+        });
+      }
+
       if (best && (best.tag === "canny" || best.tag === "cannyLow")) best.corners = shrink(best.corners, 2);
+
       if (opts && opts.debug) return { best: best, candidates: cands };
       return best ? best.corners : null;
     } finally {
@@ -383,6 +442,11 @@
       tmp.delete();
       k3.delete();
       k9.delete();
+      if (planes) planes.delete();
+      if (labPlanes) labPlanes.delete();
+      if (kClose) kClose.delete();
+      if (lowSupport) lowSupport.delete();
+      if (soft) soft.delete();
     }
   }
 
@@ -402,6 +466,9 @@
     try {
       cv.warpPerspective(src, out, M, new cv.Size(w, h), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
       return out;
+    } catch (e) {
+      out.delete();
+      throw e;
     } finally {
       from.delete();
       to.delete();
@@ -414,39 +481,88 @@
     return n % 2 === 0 ? n + 1 : n;
   }
 
-  /** Yorug'lik notekisligini yo'qotadi: fon oq bo'ladi, matn qorong'i qoladi. 8-bit bir kanalli Mat qaytaradi. */
-  function flattenGray(cv, rgba) {
-    const gray = new cv.Mat();
+  /** Bitta 8-bit kanalda yorug'lik notekisligini yo'qotadi: fon 255 (oq) bo'ladi, matn qorong'i qoladi. Yangi Mat qaytaradi. */
+  function flattenPlane(cv, plane) {
     const small = new cv.Mat();
     const bg = new cv.Mat();
     const out = new cv.Mat();
     const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
     try {
-      cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
-      const sw = Math.max(8, Math.round(gray.cols / 6));
-      const sh = Math.max(8, Math.round(gray.rows / 6));
-      cv.resize(gray, small, new cv.Size(sw, sh), 0, 0, cv.INTER_AREA);
+      const sw = Math.max(8, Math.round(plane.cols / 6));
+      const sh = Math.max(8, Math.round(plane.rows / 6));
+      cv.resize(plane, small, new cv.Size(sw, sh), 0, 0, cv.INTER_AREA);
       cv.dilate(small, small, k); // qorong'i matnni fon bahosidan olib tashlaydi
       const g = oddAtLeast(Math.min(sw, sh) / 3, 5);
       cv.GaussianBlur(small, small, new cv.Size(g, g), 0);
-      cv.resize(small, bg, new cv.Size(gray.cols, gray.rows), 0, 0, cv.INTER_LINEAR);
-      cv.divide(gray, bg, out, 255);
+      cv.resize(small, bg, new cv.Size(plane.cols, plane.rows), 0, 0, cv.INTER_LINEAR);
+      cv.divide(plane, bg, out, 255);
       return out;
     } catch (e) {
       out.delete();
       throw e;
     } finally {
-      gray.delete();
       small.delete();
       bg.delete();
       k.delete();
     }
   }
 
+  /** RGBA dan bir kanalli, yorug'ligi tekislangan kulrang Mat. */
+  function flattenGray(cv, rgba) {
+    const gray = new cv.Mat();
+    try {
+      cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
+      return flattenPlane(cv, gray);
+    } finally {
+      gray.delete();
+    }
+  }
+
+  /**
+   * Rangli skan: har bir rang kanalida fon tekislanadi (qog'oz oqaradi, ranglar saqlanadi).
+   * Natija asl rasm bilan 80/20 aralashtiriladi, shunda rasm/rangli joylar "yuvilib" ketmaydi.
+   */
+  function flattenColor(cv, rgba) {
+    const rgb = new cv.Mat();
+    const planes = new cv.MatVector();
+    const outs = new cv.MatVector();
+    const merged = new cv.Mat();
+    const mixed = new cv.Mat();
+    const out = new cv.Mat();
+    try {
+      cv.cvtColor(rgba, rgb, cv.COLOR_RGBA2RGB);
+      cv.split(rgb, planes);
+      for (let i = 0; i < 3; i++) {
+        const p = planes.get(i);
+        let f = null;
+        try {
+          f = flattenPlane(cv, p);
+          outs.push_back(f);
+        } finally {
+          p.delete();
+          if (f) f.delete();
+        }
+      }
+      cv.merge(outs, merged);
+      cv.addWeighted(merged, 0.8, rgb, 0.2, 0, mixed);
+      cv.cvtColor(mixed, out, cv.COLOR_RGB2RGBA);
+      return out;
+    } catch (e) {
+      out.delete();
+      throw e;
+    } finally {
+      rgb.delete();
+      planes.delete();
+      outs.delete();
+      merged.delete();
+      mixed.delete();
+    }
+  }
+
   /** mode: "color" | "gray" | "bw". Yangi RGBA Mat qaytaradi (src ga tegmaydi). */
   function applyFilter(cv, src, mode) {
-    const out = new cv.Mat();
     if (mode === "gray" || mode === "bw") {
+      const out = new cv.Mat();
       const flat = flattenGray(cv, src);
       try {
         if (mode === "bw") {
@@ -460,13 +576,18 @@
         } else {
           cv.cvtColor(flat, out, cv.COLOR_GRAY2RGBA);
         }
+        return out;
+      } catch (e) {
+        out.delete();
+        throw e;
       } finally {
         flat.delete();
       }
-      return out;
     }
-    src.copyTo(out);
-    return out;
+    if (COLOR_ENHANCE) return flattenColor(cv, src);
+    const copy = new cv.Mat();
+    src.copyTo(copy);
+    return copy;
   }
 
   /**
@@ -493,6 +614,7 @@
     orderCorners: orderCorners,
     looksLikeDocument: looksLikeDocument,
     cornerShift: cornerShift,
+    quadInside: quadInside,
     detect: detect,
     warp: warp,
     applyFilter: applyFilter,
